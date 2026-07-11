@@ -1,0 +1,26 @@
+# Simulator work / build artifacts
+work/
+csrc/
+simv*
+*.daidir/
+transcript
+vsim.wlf
+*.vcd
+*.fsdb
+*.wlf
+*.log
+ucli.key
+novas*
+verdiLog/
+*.vstf
+
+# Coverage
+*.ucdb
+*.vdb
+cov*/
+urgReport/
+covhtml*/
+
+# Logs / temp
+*.tmp
+.DS_Store
