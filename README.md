@@ -1,141 +1,382 @@
-# RAM-SoC — RTL Design and Verification using UVM
+# RAM-SoC: RTL Design and Multi-Agent UVM Verification
 
-Design and functional verification of a **4096 × 64-bit dual-port RAM SoC**, verified with **two independent testbenches**:
+> **A scalable 4096 × 64-bit banked RAM SoC designed in Verilog HDL and verified using reusable SystemVerilog and UVM verification environments.**
 
-1. **SystemVerilog (class-based) verification environment** — a from-scratch layered TB.
-2. **UVM verification environment** — a reusable, configurable, agent-based UVM TB.
+This project demonstrates the complete RTL design and functional verification flow of a **4096 × 64-bit RAM SoC** consisting of **four independent memory banks**, each verified using its own configurable **Read Agent**, **Write Agent**, and **Scoreboard**.
 
-Both environments target the same synthesizable RTL and check writes against reads using a scoreboard / reference model.
+Unlike a traditional single-agent verification environment, this project implements a **multi-agent UVM architecture** coordinated through a **Virtual Sequencer** and **Virtual Sequences**, making the verification environment scalable and reusable for larger SoC designs.
 
 ---
 
-## Repository layout
+# Project Highlights
+
+- RTL Design of a **4096 × 64-bit Banked RAM SoC**
+- Hierarchical Memory Architecture
+- 4 Independent RAM Banks
+- Configurable Multi-Agent UVM Environment
+- Multiple Read Agents
+- Multiple Write Agents
+- Virtual Sequencer & Virtual Sequences
+- Independent Scoreboards per Memory Bank
+- TLM Analysis FIFOs
+- Reference Model using Associative Array
+- Layered SystemVerilog Verification Environment
+- Constrained-Random Verification
+- Functional Coverage
+- Regression Support
+
+---
+
+# UVM Verification Architecture
+
+<p align="center">
+<img src="docs/architecture.png" width="850">
+</p>
+
+> **Note:** Replace `docs/architecture.png` with the path to your architecture image.
+
+The verification environment consists of:
+
+- **4 Write Agents**
+- **4 Read Agents**
+- **4 Independent Scoreboards**
+- **1 Virtual Sequencer**
+- **1 Virtual Sequence**
+
+Each memory bank is verified independently while still being coordinated through the Virtual Sequencer, making the environment highly scalable.
+
+---
+
+# Architecture Overview
 
 ```
-RAM-SoC---RTL-Design-and-Verification-using-UVM/
-├── SV_Verification/          # Class-based SystemVerilog testbench
-│   ├── rtl/                  # DUT (ram_4096, mem_dec, dual_mem)
-│   ├── env/                  # ram_env (top-level environment)
-│   ├── env_lib/             # gen, drivers, monitors, scoreboard, model, if, trans
-│   ├── test/                # top.sv, test.sv, ram_pkg.sv
-│   └── sim/                 # Makefile (Questa / VCS)
-│
-└── UVM_Verification/         # UVM testbench (RAM-SoC, 4 memory banks)
-    ├── rtl/                  # DUT + SoC wrapper + interface
-    ├── wr_agt_top/          # Write agent (driver, monitor, sequencer, seqs, xtn, cfg)
-    ├── rd_agt_top/          # Read agent  (driver, monitor, sequencer, seqs, xtn, cfg)
-    ├── tb/                  # env, scoreboard, virtual sequencer/seqs, top, configs
-    ├── test/                # test package + test library (base + 4 tests)
-    └── sim/                 # Makefile (Questa / VCS)
-```
+                    Virtual Sequence
+                            │
+                            ▼
+                  Virtual Sequencer
+                            │
+      ┌────────────────────────────────────────┐
+      │                                        │
+      ▼                                        ▼
 
----
+   Write Agents (4)                     Read Agents (4)
 
-## Design Under Test (DUT)
+ wr_agt_top[0]                       rd_agt_top[0]
+ wr_agt_top[1]                       rd_agt_top[1]
+ wr_agt_top[2]                       rd_agt_top[2]
+ wr_agt_top[3]                       rd_agt_top[3]
 
-A 4096-deep, 64-bit-wide RAM built hierarchically:
+      │                                        │
+      └──────────────────┬─────────────────────┘
+                         ▼
 
-| Module      | Role |
-|-------------|------|
-| `ram_4096`  | Top RAM. 12-bit address (`ADDR_SIZE=12`), 64-bit data (`RAM_WIDTH=64`). Decodes the 2 MSB address bits to select one of 4 banks. |
-| `mem_dec`   | 2→4 address decoder that produces the per-bank enable (one-hot). |
-| `dual_mem`  | 1024 × 64 dual-port memory bank. Independent read/write addresses, tri-state `data_out` (`64'bz`) when not selected. |
+               RAM SoC (4096 × 64)
 
-**RAM-SoC wrapper (UVM env):**
+        ┌────────┬────────┬────────┬
+        ▼        ▼        ▼        ▼
+      MEM0     MEM1     MEM2     MEM3
 
-| Module     | Role |
-|------------|------|
-| `ram_soc`  | Instantiates 4 `ram_chip` banks (`MB1..MB4`), each driven by its own interface. |
-| `ram_chip` | Wraps one `ram_4096` and binds it to a `ram_if` interface via the `DUV_MP` modport. |
-| `ram_if`   | Interface with clocking blocks & modports for write/read driver and monitor (`wdr_cb`, `rdr_cb`, `wmon_cb`, `rmon_cb`). |
+        ▲        ▲        ▲        ▲
+        └────────┴────────┴────────┘
 
-Key behavior:
-- **Writes** are registered on `posedge clk` when the bank is enabled and `write` is asserted.
-- **Reads** drive `data_out` on `posedge clk` when enabled and `read` is asserted; otherwise the bank tri-states its output.
-- Separate read/write address buses allow concurrent read and write.
-
----
-
-## SV Verification Environment (`SV_Verification/`)
-
-A classic layered class-based testbench:
-
-- `ram_trans` — transaction (randomized address / data with constraints).
-- `ram_gen` — generator/stimulus.
-- `ram_write_drv` / `ram_read_drv` — drivers (drive the interface via modports).
-- `ram_write_mon` / `ram_read_mon` — monitors (sample the interface).
-- `ram_model` — reference model of the RAM.
-- `ram_sb` — scoreboard comparing DUT reads vs. the reference model.
-- `ram_env` — connects all components.
-- `test.sv` — base test + extended test with directed/constrained-random constraints.
-- `top.sv` — instantiates DUT + interface, generates clock, and launches tests via `+TEST1` / `+TEST2` plusargs.
-
-### Run (from `SV_Verification/sim/`)
-
-The Makefile supports **Questa** and **VCS** (set `SIMULATOR = Questa` or `VCS`):
-
-```bash
-make sv_cmp       # compile
-make TC1          # run test case 1
-make TC2          # run test case 2
-make TC3          # run test case 3
-make regress_123  # clean, compile & run TC1..TC3 + merge coverage
-make covhtml      # open merged coverage report (HTML)
-make clean
+                 Scoreboards (4)
 ```
 
 ---
 
-## UVM Verification Environment (`UVM_Verification/`)
+# Design Under Test
 
-A reusable UVM TB built around configurable **write** and **read** agents replicated across the 4 RAM banks.
+The DUT is implemented as a **4096 × 64-bit banked synchronous RAM**.
 
-**Components**
-- **Write agent** (`wr_agt_top/`): `write_xtn`, `ram_wr_driver`, `ram_wr_monitor`, `ram_wr_sequencer`, `ram_wr_seqs`, `ram_wr_agent(_config)`.
-- **Read agent** (`rd_agt_top/`): `read_xtn`, `ram_rd_driver`, `ram_rd_monitor`, `ram_rd_sequencer`, `ram_rd_seqs`, `ram_rd_agent(_config)`.
-- **Environment** (`tb/`): `ram_tb` (env) builds dynamic arrays of agents per DUT, `ram_scoreboard` (TLM analysis FIFOs compare writes vs. reads), `ram_virtual_sequencer` + `ram_virtual_seqs` to coordinate stimulus across banks, `ram_env_config` / agent configs for knobs (`has_wagent`, `has_ragent`, `has_scoreboard`, `no_of_duts`, …).
-- **Top** (`tb/top.sv`): generates clock, instantiates 4 `ram_if` + `ram_soc`, publishes virtual interfaces (`vif_0..vif_3`) through `uvm_config_db`, and calls `run_test()`.
+The memory is divided into **four 1024 × 64 memory banks**.
 
-**Tests** (`test/ram_vtest_lib.sv`)
+```
+12-bit Address
+
+[11:10] ---> Bank Select
+
+[9:0] ---> Address inside selected bank
+```
+
+The upper address bits are decoded using a **2-to-4 decoder**, activating only one memory bank at a time.
+
+---
+
+# RTL Modules
+
+| Module | Description |
+|---------|-------------|
+| ram_4096 | Top-level RAM controller |
+| mem_dec | 2-to-4 decoder for bank selection |
+| dual_mem | 1024 × 64 dual-port RAM bank |
+| ram_soc | Instantiates four RAM banks |
+| ram_chip | Wrapper around each RAM |
+| ram_if | Interface containing clocking blocks and modports |
+
+---
+
+# Verification Environments
+
+The repository contains **two independent verification environments** targeting the same RTL.
+
+## 1. Layered SystemVerilog Verification
+
+A custom verification environment built from scratch.
+
+### Components
+
+- Transaction
+- Generator
+- Driver
+- Monitor
+- Reference Model
+- Scoreboard
+- Environment
+- Test Library
+
+Features
+
+- Directed Testing
+- Constrained Random Verification
+- Reference Model
+- Functional Coverage
+
+---
+
+## 2. UVM Verification Environment
+
+A reusable verification environment built using standard UVM methodology.
+
+### Write Agent
+
+- Driver
+- Monitor
+- Sequencer
+- Sequences
+- Configuration
+
+### Read Agent
+
+- Driver
+- Monitor
+- Sequencer
+- Sequences
+- Configuration
+
+### Environment
+
+- Virtual Sequencer
+- Virtual Sequences
+- Environment Configuration
+- Factory Registration
+- Analysis Ports
+- TLM Analysis FIFOs
+- Scoreboards
+
+---
+
+# Multi-Agent Verification Flow
+
+Each RAM bank has an independent verification path.
+
+```
+Write Sequence
+      │
+      ▼
+Write Agent
+      │
+      ▼
+RAM Bank
+      │
+      ▼
+Write Monitor
+      │
+      ▼
+Scoreboard
+```
+
+Similarly,
+
+```
+Read Sequence
+      │
+      ▼
+Read Agent
+      │
+      ▼
+RAM Bank
+      │
+      ▼
+Read Monitor
+      │
+      ▼
+Scoreboard
+```
+
+The Virtual Sequencer coordinates all agents simultaneously, enabling synchronized verification across multiple RAM banks.
+
+---
+
+# Scoreboard Methodology
+
+Each scoreboard maintains its own reference model using an associative array.
+
+### Write Flow
+
+```
+Write Monitor
+      │
+      ▼
+Analysis FIFO
+      │
+      ▼
+Reference Memory Update
+```
+
+### Read Flow
+
+```
+Read Monitor
+      │
+      ▼
+Analysis FIFO
+      │
+      ▼
+Reference Memory Lookup
+      │
+      ▼
+Expected Data
+      │
+      ▼
+Compare
+      │
+      ▼
+PASS / FAIL
+```
+
+Each scoreboard reports:
+
+- Number of Write Transactions
+- Number of Read Transactions
+- Compared Transactions
+- Dropped Transactions
+- Data Mismatches
+
+---
+
+# Test Suite
 
 | Test | Description |
 |------|-------------|
-| `ram_base_test`        | Base test (env config + common setup). |
-| `ram_single_addr_test` | Write/read a single address. |
-| `ram_ten_addr_test`    | Ten-address traffic. |
-| `ram_odd_addr_test`    | Odd-address traffic. |
-| `ram_even_addr_test`   | Even-address traffic. |
+| ram_single_addr_test | Single-address write/read verification |
+| ram_ten_addr_test | Multiple-address verification |
+| ram_even_addr_test | Even-address transactions |
+| ram_odd_addr_test | Odd-address transactions |
 
-### Run (from `UVM_Verification/sim/`)
+---
 
-Set `SIMULATOR = Questa` (or `VCS`), then:
+# Repository Structure
 
-```bash
-make sv_cmp       # create lib & compile
-make run_test     # ram_single_addr_test
-make run_test1    # ram_ten_addr_test
-make run_test2    # ram_odd_addr_test
-make run_test3    # ram_even_addr_test
-make regress      # clean, compile & run all tests
-make report       # merge coverage & convert to HTML
-make cov          # open merged coverage report
-make view_wave1   # view waveform (per test: view_wave1..4)
-make clean
+```
+RAM-SoC---RTL-Design-and-Verification-using-UVM/
+
+├── SV_Verification/
+│   ├── rtl/
+│   ├── env/
+│   ├── env_lib/
+│   ├── test/
+│   └── sim/
+│
+└── UVM_Verification/
+    ├── rtl/
+    ├── wr_agt_top/
+    ├── rd_agt_top/
+    ├── tb/
+    ├── test/
+    └── sim/
 ```
 
-Tests are selected via `+UVM_TESTNAME=<test>` inside the Makefile targets.
+---
+
+# Running the Project
+
+### SystemVerilog
+
+```bash
+make sv_cmp
+make TC1
+make TC2
+make TC3
+make regress_123
+```
+
+### UVM
+
+```bash
+make sv_cmp
+
+make run_test
+
+make run_test1
+
+make run_test2
+
+make run_test3
+
+make regress
+
+make report
+
+make cov
+```
 
 ---
 
-## Requirements
+# Tools & Technologies
 
-- A SystemVerilog/UVM-capable simulator: **Mentor Questa** or **Synopsys VCS**.
-- **UVM library** (for `UVM_Verification/` — uses `uvm_pkg` and `uvm_macros.svh`).
-- GNU Make.
-- (Optional) Verdi/FSDB for waveform dumping — the tops guard `$fsdbDumpvars` under `` `ifdef VCS ``.
+### RTL Design
+
+- Verilog HDL
+
+### Verification
+
+- SystemVerilog
+- UVM 1.2
+
+### Concepts
+
+- Layered Verification
+- Multi-Agent UVM
+- Virtual Sequencing
+- Constrained Random Verification
+- TLM Communication
+- Scoreboard
+- Reference Model
+- Functional Coverage
+- Regression Testing
+
+### Simulators
+
+- Mentor QuestaSim
+- Synopsys VCS
 
 ---
 
-## Notes
+# Key Learning Outcomes
 
-This project was developed as part of RTL design & verification lab work (RAM-SoC, Lab 10). The two testbenches demonstrate the same DUT verified with a hand-built SystemVerilog environment and with a methodology-driven UVM environment.
+- RTL Design of Banked Memory Architectures
+- Multi-Agent UVM Verification
+- Virtual Sequencer & Virtual Sequences
+- Agent Configuration
+- TLM Communication
+- Scoreboard Development
+- Reference Model Design
+- Associative Array Modeling
+- Functional Verification
+- Regression Automation
+
+---
+
+# License
+
+This project is intended for educational and learning purposes.
